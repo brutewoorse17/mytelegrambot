@@ -1,9 +1,10 @@
 import os
 import logging
 import math
+import subprocess
 from typing import Union, Tuple
 from tempfile import mkstemp
-from moviepy.editor import VideoFileClip
+import cv2
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import RPCError
@@ -16,9 +17,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Bot configuration
-API_ID = 1845829  # Your API ID from my.telegram.org
-API_HASH = "334d370d0c39a8039e6dfc53dd0f6d75"  # Your API Hash
-BOT_TOKEN = "7633520700:AAHmBLBTV2oj-6li8E1txmIiS_zJOzquOxc"  # Your bot token from @BotFather
+API_ID = 1845829  # Replace with your API ID
+API_HASH = "334d370d0c39a8039e6dfc53dd0f6d75"  # Replace with your API Hash
+BOT_TOKEN = "7633520700:AAHmBLBTV2oj-6li8E1txmIiS_zJOzquOxc"  # Replace with your bot token
 
 # Video settings
 SUPPORTED_EXTENSIONS = {'.mp4', '.mov', '.avi', '.mkv', '.flv', '.webm', '.mpeg', '.mpg', '.wmv'}
@@ -47,33 +48,47 @@ def get_file_info(message: Message) -> Tuple[Union[None, object], Union[None, st
     
     return None, "No supported file found"
 
+async def get_video_duration(input_path: str) -> float:
+    """Get video duration using FFprobe"""
+    cmd = [
+        'ffprobe',
+        '-v', 'error',
+        '-show_entries', 'format=duration',
+        '-of', 'default=noprint_wrappers=1:nokey=1',
+        input_path
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    return float(result.stdout.strip())
+
 async def estimate_output_size(input_path: str) -> int:
     """Estimate output file size in bytes"""
     try:
-        clip = VideoFileClip(input_path)
-        duration = clip.duration
-        fps = clip.fps
-        width, height = clip.size
+        # Get video bitrate and duration
+        cmd = [
+            'ffprobe',
+            '-v', 'error',
+            '-select_streams', 'v:0',
+            '-show_entries', 'stream=bit_rate',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            input_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        bitrate = float(result.stdout.strip())
+        duration = await get_video_duration(input_path)
         
-        # Rough estimation formula (bytes)
-        # This is simplified - actual size depends on compression, content, etc.
-        estimated_size = (width * height * fps * duration * 0.07)  # 0.07 is a compression factor
-        
-        clip.close()
-        return int(estimated_size)
+        # Estimated size = (bitrate * duration) / 8 (convert bits to bytes)
+        return int((bitrate * duration) / 8)
     except Exception as e:
         logger.error(f"Size estimation error: {e}")
         return 0
 
 async def split_video(input_path: str, output_prefix: str, max_size: int) -> list:
-    """Split video into segments that fit under max_size"""
+    """Split video into segments that fit under max_size using FFmpeg"""
     segments = []
-    clip = VideoFileClip(input_path)
-    total_duration = clip.duration
+    total_duration = await get_video_duration(input_path)
     estimated_total_size = await estimate_output_size(input_path)
     
     if estimated_total_size <= max_size:
-        clip.close()
         return [input_path]  # No splitting needed
     
     # Calculate needed segments
@@ -87,7 +102,7 @@ async def split_video(input_path: str, output_prefix: str, max_size: int) -> lis
             num_segments = 1
         segment_duration = total_duration / num_segments
     
-    # Split the video
+    # Split the video using FFmpeg
     for i in range(num_segments):
         start_time = i * segment_duration
         end_time = (i + 1) * segment_duration if i < num_segments - 1 else total_duration
@@ -95,18 +110,21 @@ async def split_video(input_path: str, output_prefix: str, max_size: int) -> lis
         fd, segment_path = mkstemp(suffix=f"_part{i+1}.mp4")
         os.close(fd)
         
-        subclip = clip.subclip(start_time, end_time)
-        subclip.write_videofile(
-            segment_path,
-            codec='libx264',
-            audio_codec='aac',
-            threads=4,
-            preset='fast'
-        )
-        subclip.close()
+        cmd = [
+            'ffmpeg',
+            '-i', input_path,
+            '-ss', str(start_time),
+            '-to', str(end_time),
+            '-c:v', 'libx264',
+            '-c:a', 'aac',
+            '-preset', 'fast',
+            '-y',  # Overwrite without asking
+            segment_path
+        ]
+        
+        subprocess.run(cmd, check=True)
         segments.append(segment_path)
     
-    clip.close()
     return segments
 
 @app.on_message(filters.command("start"))
@@ -145,7 +163,7 @@ async def handle_video(client: Client, message: Message):
         await message.reply_text(f"⚠️ {error}")
         return
     
-    # Create temp files
+    # Create temp file
     fd, input_path = mkstemp(suffix='.temp')
     os.close(fd)
     
@@ -195,11 +213,14 @@ async def handle_video(client: Client, message: Message):
     except RPCError as e:
         logger.error(f"RPCError: {e}")
         await status_msg.edit_text("⚠️ Error processing file. Please try again.")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"FFmpeg error: {e}")
+        await status_msg.edit_text("⚠️ Error during video processing (FFmpeg error).")
     except Exception as e:
-        logger.error(f"Conversion error: {e}", exc_info=True)
-        await status_msg.edit_text("⚠️ Error during video processing.")
+        logger.error(f"Unexpected error: {e}", exc_info=True)
+        await status_msg.edit_text("⚠️ An unexpected error occurred.")
     finally:
-        # Clean up all temp files
+        # Clean up temp files
         temp_files = [input_path]
         if 'segments' in locals():
             temp_files.extend(segments)
@@ -214,7 +235,7 @@ async def handle_video(client: Client, message: Message):
 async def progress_callback(current, total, status_msg, action):
     """Update progress during download/upload"""
     percent = (current / total) * 100
-    if int(percent) % 10 == 0:  # Update every 10% to avoid spamming
+    if int(percent) % 5 == 0:  # Update every 5% to avoid spamming
         try:
             await status_msg.edit_text(f"{action}... {int(percent)}%")
         except RPCError:
@@ -222,5 +243,12 @@ async def progress_callback(current, total, status_msg, action):
 
 if __name__ == "__main__":
     logger.info("Starting video converter bot...")
-    app.run()
+    # Verify FFmpeg is available
+    try:
+        subprocess.run(['ffmpeg', '-version'], check=True, capture_output=True)
+        subprocess.run(['ffprobe', '-version'], check=True, capture_output=True)
+    except FileNotFoundError:
+        logger.error("FFmpeg or FFprobe not found. Please install FFmpeg.")
+        exit(1)
     
+    app.run()
