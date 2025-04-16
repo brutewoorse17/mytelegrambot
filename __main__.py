@@ -1,199 +1,226 @@
-import logging
-import libtorrent as lt
-import time
 import os
-import requests
+import logging
+import math
+from typing import Union, Tuple
+from tempfile import mkstemp
+from moviepy.editor import VideoFileClip
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.types import Message
+from pyrogram.errors import RPCError
 
-# Initialize logging
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+# Configure logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-# Telegram Bot Token
-TOKEN = 'YOUR_BOT_TOKEN'  # Replace with your actual Telegram bot token
+# Bot configuration
+API_ID = 1845829  # Your API ID from my.telegram.org
+API_HASH = "334d370d0c39a8039e6dfc53dd0f6d75"  # Your API Hash
+BOT_TOKEN = "7633520700:AAHmBLBTV2oj-6li8E1txmIiS_zJOzquOxc"  # Your bot token from @BotFather
 
-# Torrent download directory
-DOWNLOAD_DIR = '/path/to/download'
+# Video settings
+SUPPORTED_EXTENSIONS = {'.mp4', '.mov', '.avi', '.mkv', '.flv', '.webm', '.mpeg', '.mpg', '.wmv'}
+MAX_SINGLE_FILE_SIZE = 1900 * 1024 * 1024  # 1900MB (slightly under 2GB for safety)
+MIN_SPLIT_DURATION = 30  # Minimum duration (seconds) for a split segment
 
-# Bot Owner ID (replace with your actual Telegram user ID)
-OWNER_ID = 123456789  # Replace with your own Telegram user ID
+# Initialize Pyrogram client
+app = Client(
+    "video_converter_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
+)
 
-# Dictionary to track ongoing downloads
-user_downloads = {}
-# Dictionary to track already uploaded file IDs
-uploaded_files = {}
+def get_file_info(message: Message) -> Tuple[Union[None, object], Union[None, str]]:
+    """Extract file information from message and validate it"""
+    if message.document:
+        file = message.document
+        ext = os.path.splitext(file.file_name or "")[1].lower()
+        if ext not in SUPPORTED_EXTENSIONS:
+            return None, "Unsupported file format"
+        return file, None
+    
+    if message.video:
+        return message.video, None
+    
+    return None, "No supported file found"
 
-# Function to check if the user is the owner
-def is_owner(user_id: int) -> bool:
-    return user_id == OWNER_ID
-
-# Function to start the bot
-@Client.on_message(filters.command("start"))
-async def start(client, message):
-    await message.reply_text("Hello! Send me a torrent magnet link or a direct download link, and I will handle it.")
-
-# Function to handle either torrent magnet links or direct download links
-@Client.on_message(filters.text & ~filters.command())
-async def handle_torrent_or_link(client, message):
-    user_id = message.from_user.id
-    input_link = message.text
-
-    if "magnet:" in input_link:
-        # Handle as a magnet link
-        await handle_magnet_link(client, message, input_link)
-    elif input_link.startswith("http://") or input_link.startswith("https://"):
-        # Handle as a direct download link
-        await handle_direct_link(client, message, input_link)
-    else:
-        await message.reply_text("Please send a valid magnet link or a direct download link.")
-
-# Function to handle torrent magnet links
-async def handle_magnet_link(client, message, magnet_link):
-    user_id = message.from_user.id
-
+async def estimate_output_size(input_path: str) -> int:
+    """Estimate output file size in bytes"""
     try:
-        # Create a torrent session
-        ses = lt.session()
-        ses.listen_on(6881, 6891)
-
-        # Add the torrent
-        params = {
-            'save_path': DOWNLOAD_DIR,
-            'storage_mode': lt.storage_mode_t(2)  # Use file storage
-        }
-        handle = lt.add_magnet_uri(ses, magnet_link, params)
-
-        # Store the download session in the user's download tracking dictionary
-        user_downloads[user_id] = {'handle': handle, 'session': ses, 'message_id': message.message_id}
-
-        await message.reply_text(f"Downloading metadata for {handle.name()}...")
-
-        # Wait for the metadata to be downloaded
-        while not handle.has_metadata():
-            time.sleep(1)
-
-        await message.reply_text(f"Torrent metadata downloaded. Starting download for {handle.name()}")
-
-        # Start downloading the torrent
-        while not handle.is_seed():
-            status = handle.status()
-            progress_msg = f"{status.state} {status.progress*100:.1f}% complete " \
-                           f"(down: {status.download_rate / 1000:.1f} kB/s up: {status.upload_rate / 1000:.1f} kB/s " \
-                           f"peers: {status.num_peers})"
-            await message.reply_text(progress_msg)
-            time.sleep(5)  # Update progress every 5 seconds
-
-        # After the download is completed, offer the file type choices via inline buttons
-        download_file_path = os.path.join(DOWNLOAD_DIR, handle.name())
-        if os.path.exists(download_file_path):
-            await message.reply_text(f"Download completed! Choose a file type to upload.", reply_markup=build_file_type_keyboard(download_file_path))
-        else:
-            await message.reply_text(f"Downloaded file {handle.name()} not found in the directory.")
-
-    except Exception as e:
-        logger.error(f"Error downloading torrent: {e}")
-        await message.reply_text("There was an error processing your torrent link.")
-        del user_downloads[user_id]  # Remove the download from tracking in case of error
-
-# Function to handle direct download links
-async def handle_direct_link(client, message, download_link):
-    user_id = message.from_user.id
-
-    try:
-        # Extract the file name from the URL
-        file_name = download_link.split("/")[-1]
-        download_path = os.path.join(DOWNLOAD_DIR, file_name)
-
-        # Download the file
-        await message.reply_text(f"Downloading file: {file_name}...")
-
-        # Stream the content and save it to the download directory
-        with requests.get(download_link, stream=True) as r:
-            if r.status_code == 200:
-                with open(download_path, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
-
-                await message.reply_text(f"Download of {file_name} completed! Choose a file type to upload.",
-                                         reply_markup=build_file_type_keyboard(download_path))
-            else:
-                await message.reply_text("Failed to download the file. Please check the link and try again.")
-    except Exception as e:
-        logger.error(f"Error downloading direct link: {e}")
-        await message.reply_text("There was an error processing your direct download link.")
-
-# Build the inline keyboard with file type options
-def build_file_type_keyboard(file_path: str):
-    file_types = ['.mp4', '.zip', '.pdf', '.jpg', '.png']  # Define file types
-    keyboard = []
-
-    for file_type in file_types:
-        keyboard.append([InlineKeyboardButton(f"Send {file_type} file", callback_data=f"send_{file_type}")])
-
-    return InlineKeyboardMarkup(keyboard)
-
-# Handle the button press and upload the selected file type
-@Client.on_callback_query(filters.regex('^send_'))
-async def handle_file_type_selection(client, query):
-    selected_file_type = query.data.split('_')[1]
-    user_id = query.from_user.id
-    file_path = os.path.join(DOWNLOAD_DIR, user_downloads[user_id]['handle'].name())
-
-    # Check if the file has already been uploaded
-    if file_path in uploaded_files:
-        await query.edit_message_text(text=f"The file has already been uploaded to Telegram.")
-    else:
-        # Filter the file to upload based on the selected type
-        selected_file = get_file_of_type(file_path, selected_file_type)
-
-        if selected_file:
-            # Upload the file with progress tracking
-            await query.edit_message_text(text=f"Uploading your {selected_file_type} file...")
-            await upload_file_with_progress(client, query, selected_file)
-        else:
-            await query.edit_message_text(text=f"No {selected_file_type} file found in the downloaded torrent.")
-
-# Helper function to get a file of the specified type
-def get_file_of_type(file_path: str, file_type: str):
-    # Check if the file exists and matches the type
-    for root, dirs, files in os.walk(file_path):
-        for file in files:
-            if file.lower().endswith(file_type):
-                return os.path.join(root, file)
-    return None
-
-# Upload file with progress tracking
-async def upload_file_with_progress(client, query, file_path):
-    total_size = os.path.getsize(file_path)  # Get the total size of the file
-    with open(file_path, 'rb') as f:
-        chunk_size = 1024 * 1024  # 1MB chunks
-        bytes_uploaded = 0
+        clip = VideoFileClip(input_path)
+        duration = clip.duration
+        fps = clip.fps
+        width, height = clip.size
         
-        # Send the file in chunks, tracking the progress
-        while chunk := f.read(chunk_size):
-            await query.edit_message_text(text=f"Uploading... {bytes_uploaded / total_size * 100:.2f}%")
-            # Upload the chunk
-            await client.send_document(query.from_user.id, document=chunk)
-            bytes_uploaded += len(chunk)
+        # Rough estimation formula (bytes)
+        # This is simplified - actual size depends on compression, content, etc.
+        estimated_size = (width * height * fps * duration * 0.07)  # 0.07 is a compression factor
+        
+        clip.close()
+        return int(estimated_size)
+    except Exception as e:
+        logger.error(f"Size estimation error: {e}")
+        return 0
 
-        # Once upload is complete, notify the user
-        await query.edit_message_text(text=f"Upload completed for {file_path}!")
+async def split_video(input_path: str, output_prefix: str, max_size: int) -> list:
+    """Split video into segments that fit under max_size"""
+    segments = []
+    clip = VideoFileClip(input_path)
+    total_duration = clip.duration
+    estimated_total_size = await estimate_output_size(input_path)
+    
+    if estimated_total_size <= max_size:
+        clip.close()
+        return [input_path]  # No splitting needed
+    
+    # Calculate needed segments
+    num_segments = math.ceil(estimated_total_size / max_size)
+    segment_duration = total_duration / num_segments
+    
+    # Ensure segments aren't too short
+    if segment_duration < MIN_SPLIT_DURATION:
+        num_segments = math.floor(total_duration / MIN_SPLIT_DURATION)
+        if num_segments < 1:
+            num_segments = 1
+        segment_duration = total_duration / num_segments
+    
+    # Split the video
+    for i in range(num_segments):
+        start_time = i * segment_duration
+        end_time = (i + 1) * segment_duration if i < num_segments - 1 else total_duration
+        
+        fd, segment_path = mkstemp(suffix=f"_part{i+1}.mp4")
+        os.close(fd)
+        
+        subclip = clip.subclip(start_time, end_time)
+        subclip.write_videofile(
+            segment_path,
+            codec='libx264',
+            audio_codec='aac',
+            threads=4,
+            preset='fast'
+        )
+        subclip.close()
+        segments.append(segment_path)
+    
+    clip.close()
+    return segments
 
-# Handle deleted messages to cancel download
-@Client.on_deleted_messages()
-async def handle_deleted_message(client, messages):
-    for message in messages:
-        user_id = message.from_user.id if message.from_user else None
-        if user_id and user_id in user_downloads:
-            # Stop the download if it's still in progress
-            if user_downloads[user_id]['session']:
-                user_downloads[user_id]['session'].pause()  # Pause the torrent download
-            await client.send_message(user_id, "Your download has been canceled because you deleted the message.")
-            del user_downloads[user_id]  # Remove the user's download from tracking
+@app.on_message(filters.command("start"))
+async def start_command(client: Client, message: Message):
+    """Handle /start command"""
+    await message.reply_text(
+        "🎥 **Video Converter Bot**\n\n"
+        "Send me a video file and I'll convert it to MP4 format.\n"
+        "Large videos will be automatically split into parts.\n\n"
+        f"📁 **Supported formats**: {', '.join(SUPPORTED_EXTENSIONS)}\n"
+        f"📏 **Max single file size**: {MAX_SINGLE_FILE_SIZE // (1024 * 1024)}MB\n\n"
+        "Use /help for more info."
+    )
 
-# Create and run the client
-app = Client("torrent_bot", bot_token=TOKEN)
+@app.on_message(filters.command("help"))
+async def help_command(client: Client, message: Message):
+    """Handle /help command"""
+    await message.reply_text(
+        "🛠 **How to use this bot:**\n\n"
+        "1. Send me any video file (document or video message)\n"
+        "2. I'll automatically convert it to MP4 format\n"
+        "3. If the file is too large, I'll split it into parts\n"
+        "4. You'll receive all converted parts\n\n"
+        "⚙️ **Commands:**\n"
+        "/start - Show welcome message\n"
+        "/help - Show this help message\n\n"
+        "⚠️ Note: Processing time depends on video length and size."
+    )
 
-if __name__ == '__main__':
+@app.on_message(filters.document | filters.video)
+async def handle_video(client: Client, message: Message):
+    """Handle incoming video files"""
+    # Get file info
+    file, error = get_file_info(message)
+    if error:
+        await message.reply_text(f"⚠️ {error}")
+        return
+    
+    # Create temp files
+    fd, input_path = mkstemp(suffix='.temp')
+    os.close(fd)
+    
+    status_msg = await message.reply_text("📥 Downloading file...")
+    
+    try:
+        # Download the file
+        await client.download_media(
+            message,
+            file_name=input_path,
+            progress=progress_callback,
+            progress_args=(status_msg, "Downloading")
+        )
+        
+        await status_msg.edit_text("🔍 Analyzing video...")
+        
+        # Check if splitting is needed
+        segments = await split_video(input_path, "output", MAX_SINGLE_FILE_SIZE)
+        
+        if len(segments) > 1:
+            await status_msg.edit_text(f"✂️ Splitting video into {len(segments)} parts...")
+        
+        # Process each segment
+        for i, segment_path in enumerate(segments):
+            segment_num = f" (Part {i+1})" if len(segments) > 1 else ""
+            await status_msg.edit_text(f"🔄 Converting{segment_num}...")
+            
+            # For single file or last segment, use reply_video
+            if i == len(segments) - 1:
+                await message.reply_video(
+                    segment_path,
+                    caption=f"Here's your converted video{segment_num}!",
+                    progress=progress_callback,
+                    progress_args=(status_msg, f"Uploading{segment_num}")
+                )
+            else:
+                await client.send_video(
+                    message.chat.id,
+                    segment_path,
+                    caption=f"Here's your converted video{segment_num}!",
+                    progress=progress_callback,
+                    progress_args=(status_msg, f"Uploading{segment_num}")
+                )
+        
+        await status_msg.delete()
+        
+    except RPCError as e:
+        logger.error(f"RPCError: {e}")
+        await status_msg.edit_text("⚠️ Error processing file. Please try again.")
+    except Exception as e:
+        logger.error(f"Conversion error: {e}", exc_info=True)
+        await status_msg.edit_text("⚠️ Error during video processing.")
+    finally:
+        # Clean up all temp files
+        temp_files = [input_path]
+        if 'segments' in locals():
+            temp_files.extend(segments)
+        
+        for path in temp_files:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception as e:
+                logger.error(f"Error cleaning up {path}: {e}")
+
+async def progress_callback(current, total, status_msg, action):
+    """Update progress during download/upload"""
+    percent = (current / total) * 100
+    if int(percent) % 10 == 0:  # Update every 10% to avoid spamming
+        try:
+            await status_msg.edit_text(f"{action}... {int(percent)}%")
+        except RPCError:
+            pass  # Don't fail if we can't update the progress
+
+if __name__ == "__main__":
+    logger.info("Starting video converter bot...")
     app.run()
+    
