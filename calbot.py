@@ -2,7 +2,6 @@ import os
 import logging
 import math
 import time
-import subprocess
 from typing import Union, Tuple, Optional, List
 from tempfile import mkdtemp, mkstemp
 from qbittorrentapi import Client
@@ -23,7 +22,7 @@ API_HASH = "334d370d0c39a8039e6dfc53dd0f6d75"
 BOT_TOKEN = "7633520700:AAHmBLBTV2oj-6li8E1txmIiS_zJOzquOxc"
 
 # qBittorrent configuration
-QBITTORRENT_HOST = "http://127.0.0.1:8080"
+QBITTORRENT_HOST = "http://localhost:8080"
 QBITTORRENT_USER = "admin"
 QBITTORRENT_PASS = "adminadmin"
 
@@ -37,51 +36,12 @@ MAX_TORRENT_SIZE = 5 * 1024 * 1024 * 1024  # 5GB max
 TORRENT_DOWNLOAD_TIMEOUT = 3600  # 1 hour timeout
 MIN_DOWNLOAD_SPEED = 50 * 1024  # 50 KB/s minimum
 
-def initialize_qbittorrent():
-    """Initialize qBittorrent connection with automatic startup"""
-    qb = Client(
-        host=QBITTORRENT_HOST,
-        username=QBITTORRENT_USER,
-        password=QBITTORRENT_PASS
-    )
-    
-    try:
-        qb.auth_log_in()
-        logger.info("Successfully connected to qBittorrent")
-        return qb
-    except Exception as e:
-        logger.warning(f"First connection attempt failed: {e}")
-        logger.info("Attempting to start qBittorrent automatically...")
-        
-        try:
-            # Start qBittorrent in the background
-            subprocess.Popen(
-                ["qbittorrent-nox", "--webui-port=8080"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            time.sleep(5)  # Wait for startup
-            
-            # Retry connection
-            for attempt in range(3):
-                try:
-                    qb.auth_log_in()
-                    logger.info(f"Successfully connected on attempt {attempt + 1}")
-                    return qb
-                except Exception:
-                    time.sleep(5)
-            
-            raise ConnectionError("Failed to connect after multiple attempts")
-        except Exception as e:
-            logger.error(f"Failed to start qBittorrent: {e}")
-            raise
-
 # Initialize qBittorrent client
-try:
-    qb = initialize_qbittorrent()
-except Exception as e:
-    logger.error(f"Critical qBittorrent initialization error: {e}")
-    exit(1)
+qb = Client(
+    host=QBITTORRENT_HOST,
+    username=QBITTORRENT_USER,
+    password=QBITTORRENT_PASS
+)
 
 # Initialize Pyrogram client
 app = PyroClient(
@@ -92,14 +52,14 @@ app = PyroClient(
 )
 
 async def download_torrent(torrent_content: Union[str, bytes], download_dir: str, message: Message) -> Optional[str]:
-    """Download torrent using qBittorrent with enhanced error handling"""
+    """Download torrent using qBittorrent"""
     try:
         # Create download directory if it doesn't exist
         os.makedirs(download_dir, exist_ok=True)
         
         # Add torrent to qBittorrent
         if isinstance(torrent_content, str) and torrent_content.startswith('magnet:'):
-            torrent = qb.torrents_add(urls=torrent_content, save_path=download_dir)
+            torrent = qb.torrents_add(torrent_content, save_path=download_dir)
         else:
             # For torrent files
             if isinstance(torrent_content, str):
@@ -114,13 +74,11 @@ async def download_torrent(torrent_content: Union[str, bytes], download_dir: str
         status_msg = await message.reply_text("🔄 Starting download...")
         last_progress = 0
         start_time = time.time()
-        last_speed_check = time.time()
-        stalled_since = None
         
         while True:
             # Check timeout
             if time.time() - start_time > TORRENT_DOWNLOAD_TIMEOUT:
-                await status_msg.edit_text("⌛ Torrent timed out (1 hour limit)")
+                await status_msg.edit_text("⌛ Torrent timed out")
                 qb.torrents_delete(torrent_hash)
                 return None
             
@@ -134,8 +92,7 @@ async def download_torrent(torrent_content: Union[str, bytes], download_dir: str
                 await status_msg.edit_text(
                     f"📥 Downloading: {progress:.1f}%\n"
                     f"⚡ Speed: {speed:.1f} KB/s\n"
-                    f"👥 Seeds: {torrent_info.num_seeds}\n"
-                    f"⏳ ETA: {format_eta(torrent_info.eta)}"
+                    f"⏳ ETA: {torrent_info.eta // 60}m"
                 )
             
             # Check for completion
@@ -144,43 +101,86 @@ async def download_torrent(torrent_content: Union[str, bytes], download_dir: str
                 return download_dir
             
             # Check for stalled download
-            current_time = time.time()
-            if speed < MIN_DOWNLOAD_SPEED:
-                if stalled_since is None:
-                    stalled_since = current_time
-                elif current_time - stalled_since > STALLED_TIME_LIMIT:
-                    await status_msg.edit_text("⚠️ Torrent stalled (low speed for too long)")
-                    qb.torrents_delete(torrent_hash)
-                    return None
-            else:
-                stalled_since = None
+            if speed < MIN_DOWNLOAD_SPEED and progress - last_progress < 1:
+                await status_msg.edit_text("⚠️ Torrent stalled (low speed)")
+                qb.torrents_delete(torrent_hash)
+                return None
             
             last_progress = progress
             time.sleep(5)
     
     except Exception as e:
-        logger.error(f"Torrent download error: {e}")
-        await message.reply_text(f"⚠️ Torrent download failed: {str(e)}")
+        logger.error(f"qBittorrent error: {e}")
+        await message.reply_text(f"⚠️ Torrent failed: {str(e)}")
         return None
 
-def format_eta(seconds: int) -> str:
-    """Format ETA into human-readable format"""
-    if seconds < 0:
-        return "Unknown"
-    minutes, seconds = divmod(seconds, 60)
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours}h {minutes}m {seconds}s"
-
 # [Keep all your existing functions like get_file_info, get_video_duration, 
-# estimate_output_size, split_video, process_video_file, handle_torrent, etc.]
+# estimate_output_size, split_video, etc. from the previous code]
+
+@app.on_message(filters.command("start"))
+async def start_command(client: PyroClient, message: Message):
+    """Enhanced start command with torrent info"""
+    await message.reply_text(
+        "🎥 **Video Converter Bot**\n\n"
+        "Send me:\n"
+        "- Video files (I'll convert to MP4)\n"
+        "- Torrent files/magnet links (I'll download and process)\n\n"
+        f"📁 Supported formats: {', '.join(SUPPORTED_EXTENSIONS)}\n"
+        f"🧲 Max torrent size: {MAX_TORRENT_SIZE//(1024**3)}GB\n"
+        f"📏 Max file size: {MAX_SINGLE_FILE_SIZE//(1024**2)}MB\n"
+        "⚡ Min download speed: 50KB/s (auto-cancels if slower)"
+    )
+
+async def handle_torrent(client: PyroClient, message: Message, torrent_content: Union[str, bytes]):
+    """Process torrent files/links"""
+    temp_dir = mkdtemp(prefix="torrent_")
+    
+    try:
+        content_path = await download_torrent(torrent_content, temp_dir, message)
+        if not content_path:
+            return
+
+        # Process downloaded files
+        processed_files = 0
+        for root, _, files in os.walk(content_path):
+            for file in files:
+                if os.path.splitext(file)[1].lower() in SUPPORTED_EXTENSIONS:
+                    file_path = os.path.join(root, file)
+                    if await process_video_file(client, message, file_path):
+                        processed_files += 1
+
+        if processed_files == 0:
+            await message.reply_text("⚠️ No supported videos found in torrent")
+    
+    except Exception as e:
+        logger.error(f"Torrent processing error: {e}")
+        await message.reply_text(f"⚠️ Torrent failed: {str(e)}")
+    finally:
+        # Clean up
+        for root, dirs, files in os.walk(temp_dir, topdown=False):
+            for name in files:
+                os.remove(os.path.join(root, name))
+            for name in dirs:
+                os.rmdir(os.path.join(root, name))
+        os.rmdir(temp_dir)
+
+# [Keep the rest of your existing handlers and main block]
 
 if __name__ == "__main__":
+    # Verify qBittorrent connection
+    try:
+        qb.auth_log_in()
+        logger.info("Connected to qBittorrent")
+    except Exception as e:
+        logger.error(f"Failed to connect to qBittorrent: {e}")
+        exit(1)
+    
     # Verify FFmpeg is available
     try:
-        subprocess.run(['ffmpeg', '-version'], check=True, capture_output=True)
+        subprocess.run(['ffmpeg', '-version'], check=True)
     except Exception as e:
         logger.error(f"FFmpeg not found: {e}")
         exit(1)
     
-    logger.info("Starting bot with qBittorrent integration...")
+    logger.info("Starting bot...")
     app.run()
