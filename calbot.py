@@ -1,3 +1,7 @@
+
+
+#chmod +x start_aria2.sh
+
 import os
 import subprocess
 import json
