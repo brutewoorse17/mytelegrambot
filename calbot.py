@@ -102,5 +102,6 @@ if settings.get("delete"):
 
 async def upload_file(message, path): settings = user_prefs[message.from_user.id] try: if settings.get("upload_as") == "video": await message.reply_video(path) else: await message.reply_document(path) except Exception as e: logger.exception("Upload failed: %s", e) await message.reply("Failed to upload.")
 
-if name == "main": logger.info("Bot started. Make sure aria2c is running.") app.run()
+if name == "main": logger.info("Bot started. Make sure aria2c is running.") 
+app.run()
 
