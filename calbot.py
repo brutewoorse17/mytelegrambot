@@ -23,7 +23,7 @@ API_ID = 1845829  # Your API ID from my.telegram.org
 API_HASH = "334d370d0c39a8039e6dfc53dd0f6d75"  # Your API Hash
 BOT_TOKEN = "7633520700:AAHmBLBTV2oj-6li8E1txmIiS_zJOzquOxc"  # Your bot token from @BotFather
 
-chat_id = int(os.getenv("CHAT_ID"))
+chat_id = None
 
 # Initialize bot
 app = Client("my_userbot", api_id=API_ID, api_hash=API_HASH)
