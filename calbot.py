@@ -190,6 +190,3 @@ if __name__ == "__main__":
     logger.info("Bot started. Make sure aria2c is running.")
     app.run()
 
-
-Modules and libraries are now cleaned, updated, and better organized. Real-time download/upload progress, direct link support, and error logging are already included. Let me know if you'd like to add features like thumbnail previews, custom speed limits, or scheduled auto-deletes.
-
