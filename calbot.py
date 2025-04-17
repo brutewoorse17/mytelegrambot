@@ -1,4 +1,3 @@
-# Imports and Setup
 import os
 import subprocess
 import json
@@ -117,6 +116,9 @@ def cleanup_slow_downloads(threshold_kbps=5, timeout=60):
         else:
             download.slow_start = time.time()
 
+# Rate-limiting mechanism
+last_update_time = {}
+
 async def start_download(user_id, message):
     settings = user_prefs[user_id]
     download = None
@@ -133,23 +135,29 @@ async def start_download(user_id, message):
         while not download.is_complete:
             download.update()
             cleanup_slow_downloads()
-            progress = (download.completed_length / (download.total_length or 1)) * 100
-            speed = download.download_speed / 1024
-            await msg.edit(
-                f"**Downloading:** `{download.name}`\n**Progress:** {progress:.2f}%\n**Speed:** {speed:.2f} KB/s",
-                parse_mode=ParseMode.MARKDOWN
-            )
+
+            # Prevent flooding by controlling update frequency
+            now = time.time()
+            if user_id not in last_update_time or now - last_update_time[user_id] >= 5:
+                progress = (download.completed_length / (download.total_length or 1)) * 100
+                speed = download.download_speed / 1024
+                await msg.edit(
+                    f"**Downloading:** `{download.name}`\n**Progress:** {progress:.2f}%\n**Speed:** {speed:.2f} KB/s",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                last_update_time[user_id] = now
+
             await asyncio.sleep(5)
 
-        await msg.edit("Download complete!")
+        await msg.edit("Download complete! Uploading...")
         for file in download.files:
-            await process_video(message, file.path)
+            await process_video(message, file.path, msg)
 
     except Exception as e:
         logger.exception("Download error: %s", e)
         await message.reply("Download failed.")
 
-async def process_video(message, path):
+async def process_video(message, path, progress_msg):
     settings = user_prefs[message.from_user.id]
     max_size = 2 * 1024 * 1024 * 1024
     filename = os.path.basename(path)
@@ -166,22 +174,43 @@ async def process_video(message, path):
             "-segment_time", str(settings["split"]), pattern
         ])
         for part in sorted(os.listdir("splits")):
-            await upload_file(message, f"splits/{part}")
+            await upload_file(message, f"splits/{part}", progress_msg)
         shutil.rmtree("splits")
     else:
-        await upload_file(message, path)
+        await upload_file(message, path, progress_msg)
 
     if settings.get("delete"):
         os.remove(path)
 
-async def upload_file(message, path):
+async def upload_file(message, path, progress_msg):
     settings = user_prefs[message.from_user.id]
     try:
-        await message.reply_document(
-            document=path,
-            caption=f"Uploaded: `{os.path.basename(path)}`",
-            parse_mode=ParseMode.MARKDOWN
-        )
+        file_size = os.path.getsize(path)
+        uploaded = 0
+
+        async def progress(current, total):
+            nonlocal uploaded
+            uploaded = current
+            percent = (current / total) * 100
+            await progress_msg.edit(
+                f"**Uploading:** `{os.path.basename(path)}`\n**Progress:** {percent:.2f}%",
+                parse_mode=ParseMode.MARKDOWN
+            )
+
+        if settings.get("upload_as") == "document":
+            await message.reply_document(
+                document=path,
+                caption=f"Uploaded: `{os.path.basename(path)}`",
+                parse_mode=ParseMode.MARKDOWN,
+                progress=progress
+            )
+        else:
+            await message.reply_video(
+                video=path,
+                caption=f"Uploaded: `{os.path.basename(path)}`",
+                parse_mode=ParseMode.MARKDOWN,
+                progress=progress
+            )
     except Exception as e:
         logger.exception("Upload failed: %s", e)
         await message.reply("Failed to upload.")
@@ -189,4 +218,3 @@ async def upload_file(message, path):
 if __name__ == "__main__":
     logger.info("Bot started. Make sure aria2c is running.")
     app.run()
-
