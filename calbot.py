@@ -212,6 +212,3 @@ if __name__ == "__main__":
     logger.info("Bot started. Make sure aria2c is running.")
     app.run()
 
-
-Done! The bot now deletes the inline buttons after the user starts the download and ensures it only edits the message when content has changed—so you won't see MESSAGE_NOT_MODIFIED errors anymore. Let me know if you want to auto-delete the message too or add progress indicators elsewhere.
-
