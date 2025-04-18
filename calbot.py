@@ -1,4 +1,3 @@
-
 import os
 import subprocess
 import json
@@ -15,7 +14,6 @@ import validators
 
 # Load environment variables
 load_dotenv()
-
 # Bot configuration
 API_ID = 1845829  # Your API ID from my.telegram.org
 API_HASH = "334d370d0c39a8039e6dfc53dd0f6d75"  # Your API Hash
@@ -129,11 +127,11 @@ async def start_download(user_id, message):
     download = None
     try:
         if settings["type"] == "torrent":
-            download = aria2.add_torrent(settings["torrent"], download_dir="downloads")
+            download = aria2.add_torrent(settings["torrent"], options={"dir": "downloads"})
         elif settings["type"] == "magnet":
-            download = aria2.add_magnet(settings["magnet"], download_dir="downloads")
+            download = aria2.add_magnet(settings["magnet"], options={"dir": "downloads"})
         elif settings["type"] == "url":
-            download = aria2.add_uris([settings["url"]], download_dir="downloads")
+            download = aria2.add_uris([settings["url"]], options={"dir": "downloads"})
 
         msg = await message.reply("Downloading...")
 
@@ -220,13 +218,6 @@ async def upload_file(message, path, progress_msg):
     except Exception as e:
         logger.exception("Upload failed: %s", e)
         await message.reply("Failed to upload.")
-
-async def safe_edit_message(message, new_text, **kwargs):
-    try:
-        if message.text != new_text:
-            await message.edit_text(new_text, **kwargs)
-    except Exception as e:
-        logger.warning(f"Skipping edit: {e}")
 
 if __name__ == "__main__":
     logger.info("Bot started. Make sure aria2c is running.")
