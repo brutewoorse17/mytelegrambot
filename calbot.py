@@ -224,12 +224,3 @@ if __name__ == "__main__":
     app.run()
 
 
-Here’s the full updated code for your Telegram torrent bot. It now:
-
-Notifies the user that the selection is complete.
-
-Deletes the inline buttons before starting the download.
-
-
-Let me know if you want to add a cancel button, queue multiple downloads, or any other features.
-
