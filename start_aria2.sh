@@ -9,4 +9,5 @@ aria2c \
   --min-split-size=1M \
   --split=10 \
   --follow-torrent=mem \
-  --seed-time=0
+  --seed-time=0 \
+  --disable-ipv6
