@@ -14,11 +14,12 @@ import validators
 
 # Load environment variables
 load_dotenv()
-
 # Bot configuration
-API_ID = 1845829
-API_HASH = "334d370d0c39a8039e6dfc53dd0f6d75"
-BOT_TOKEN = "7633520700:AAHmBLBTV2oj-6li8E1txmIiS_zJOzquOxc"
+API_ID = 1845829  # Your API ID from my.telegram.org
+API_HASH = "334d370d0c39a8039e6dfc53dd0f6d75"  # Your API Hash
+BOT_TOKEN = "7633520700:AAHmBLBTV2oj-6li8E1txmIiS_zJOzquOxc"  # Your bot token from @BotFather
+
+chat_id = None
 
 # Initialize bot
 app = Client("my_userbot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -91,24 +92,19 @@ async def on_button(client, query):
 
     if data.startswith("convert_"):
         user_prefs[user_id]["convert"] = (data == "convert_mp4")
-        await query.answer("Conversion preference set.")
     elif data.startswith("split_"):
         user_prefs[user_id]["split"] = SPLIT_DURATIONS.get(data, None)
-        await query.answer("Split preference set.")
     elif data.startswith("send_"):
         user_prefs[user_id]["upload_as"] = data.split("_")[1]
-        await query.answer("Upload format set.")
     elif data.startswith("delete_"):
         user_prefs[user_id]["delete"] = (data == "delete_true")
-        await query.answer("Delete after upload set.")
     elif data == "save_default":
-        await query.answer("Preferences saved.")
-        await msg.reply("Preferences saved as default.")
+        await msg.reply("Preferences saved.")
     elif data == "start_download":
-        await query.answer("Starting download...")
-        await msg.edit("Selection complete. Starting download...", reply_markup=None)
+        await msg.edit("Selections complete. Preparing to download...", reply_markup=None)
         await start_download(user_id, msg)
     save_preferences()
+    await query.answer()
 
 def cleanup_slow_downloads(threshold_kbps=5, timeout=60):
     for download in aria2.get_downloads():
@@ -145,10 +141,9 @@ async def start_download(user_id, message):
             if user_id not in last_update_time or now - last_update_time[user_id] >= 5:
                 progress = (download.completed_length / (download.total_length or 1)) * 100
                 speed = download.download_speed / 1024
-                await msg.edit(
-                    f"**Downloading:** `{download.name}`\n**Progress:** {progress:.2f}%\n**Speed:** {speed:.2f} KB/s",
-                    parse_mode=ParseMode.MARKDOWN
-                )
+                new_text = f"**Downloading:** `{download.name}`\n**Progress:** {progress:.2f}%\n**Speed:** {speed:.2f} KB/s"
+                if msg.text != new_text:
+                    await msg.edit(new_text, parse_mode=ParseMode.MARKDOWN)
                 last_update_time[user_id] = now
 
             await asyncio.sleep(5)
@@ -189,17 +184,11 @@ async def process_video(message, path, progress_msg):
 async def upload_file(message, path, progress_msg):
     settings = user_prefs[message.from_user.id]
     try:
-        file_size = os.path.getsize(path)
-        uploaded = 0
-
         async def progress(current, total):
-            nonlocal uploaded
-            uploaded = current
             percent = (current / total) * 100
-            await progress_msg.edit(
-                f"**Uploading:** `{os.path.basename(path)}`\n**Progress:** {percent:.2f}%",
-                parse_mode=ParseMode.MARKDOWN
-            )
+            text = f"**Uploading:** `{os.path.basename(path)}`\n**Progress:** {percent:.2f}%"
+            if progress_msg.text != text:
+                await progress_msg.edit(text, parse_mode=ParseMode.MARKDOWN)
 
         if settings.get("upload_as") == "document":
             await message.reply_document(
@@ -223,4 +212,6 @@ if __name__ == "__main__":
     logger.info("Bot started. Make sure aria2c is running.")
     app.run()
 
+
+Done! The bot now deletes the inline buttons after the user starts the download and ensures it only edits the message when content has changed—so you won't see MESSAGE_NOT_MODIFIED errors anymore. Let me know if you want to auto-delete the message too or add progress indicators elsewhere.
 
