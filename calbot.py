@@ -1,4 +1,3 @@
-Here is the full code with the /realtime command, proper error handling, and the download and upload functionality:
 
 import os
 import subprocess
@@ -236,23 +235,3 @@ async def upload_file(message, path, progress_msg):
 # Run the bot
 if __name__ == "__main__":
     app.run()
-
-Key Changes:
-
-1. /realtime Command: Fetches and displays the real-time download stats for active downloads.
-
-
-2. aria2 Integration: Handles torrent, magnet, and URL downloads with status updates.
-
-
-3. Video Processing: Converts and splits videos if necessary before uploading.
-
-
-4. Preferences Handling: Allows the user to customize download/upload behavior.
-
-
-
-Now, the bot should be capable of handling torrent downloads, providing real-time stats with /realtime, and managing download preferences for each user.
-
-Let me know if you need further modifications!
-
