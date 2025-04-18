@@ -231,6 +231,3 @@ if __name__ == "__main__":
     logger.info("Bot started. Make sure aria2c is running.")
     app.run()
 
-
-All fixed and integrated. The safe_edit_message function is now properly included, and user settings are safely accessed to avoid KeyError. Let me know if you'd like to add more features like progress commands, admin-only access, or support for multiple downloads.
-
