@@ -1,3 +1,4 @@
+
 import os
 import subprocess
 import json
@@ -16,25 +17,30 @@ import validators
 load_dotenv()
 
 # Bot configuration
-API_ID = 1845829
-API_HASH = "334d370d0c39a8039e6dfc53dd0f6d75"
-BOT_TOKEN = "7633520700:AAHmBLBTV2oj-6li8E1txmIiS_zJOzquOxc"
+API_ID = 1845829  # Your API ID from my.telegram.org
+API_HASH = "334d370d0c39a8039e6dfc53dd0f6d75"  # Your API Hash
+BOT_TOKEN = "7633520700:AAHmBLBTV2oj-6li8E1txmIiS_zJOzquOxc"  # Your bot token from @BotFather
 
+chat_id = None
+
+# Initialize bot
 app = Client("my_userbot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
+# Configure logging
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
+# Aria2 setup
 aria2 = aria2p.API(aria2p.Client(host="http://localhost", port=6800, secret=""))
 
+# Directory setup
 os.makedirs("downloads", exist_ok=True)
 os.makedirs("splits", exist_ok=True)
 
+# User preferences
 prefs_file = "prefs.json"
 user_prefs = json.load(open(prefs_file)) if os.path.exists(prefs_file) else {}
 SPLIT_DURATIONS = {"10min": 600, "20min": 1200, "30min": 1800}
-
-last_update_time = {}
 
 def save_preferences():
     with open(prefs_file, "w") as f:
@@ -56,6 +62,7 @@ def preferences_keyboard():
          InlineKeyboardButton("Start Download", callback_data="start_download")]
     ])
 
+# Torrent/file/magnet/link handlers
 @app.on_message(filters.document & filters.private)
 async def handle_torrent(client, message):
     file = message.document
@@ -97,13 +104,10 @@ async def on_button(client, query):
     elif data == "save_default":
         await msg.reply("Preferences saved.")
     elif data == "start_download":
-        await msg.edit("Starting download...")
+        await msg.reply("Starting download...")
         await start_download(user_id, msg)
-        return
-
     save_preferences()
-    await query.answer("Updated")
-
+    await query.answer()
 
 def cleanup_slow_downloads(threshold_kbps=5, timeout=60):
     for download in aria2.get_downloads():
@@ -117,19 +121,19 @@ def cleanup_slow_downloads(threshold_kbps=5, timeout=60):
         else:
             download.slow_start = time.time()
 
-async def start_download(user_id, message):
-    settings = user_prefs.get(user_id)
-    if not settings:
-        return await message.reply("No preferences found. Please resend your torrent or link.")
+# Rate-limiting mechanism
+last_update_time = {}
 
+async def start_download(user_id, message):
+    settings = user_prefs[user_id]
     download = None
     try:
         if settings["type"] == "torrent":
-            download = aria2.add_torrent(settings["torrent"])
+            download = aria2.add_torrent(settings["torrent"], download_dir="downloads")
         elif settings["type"] == "magnet":
-            download = aria2.add_magnet(settings["magnet"])
+            download = aria2.add_magnet(settings["magnet"], download_dir="downloads")
         elif settings["type"] == "url":
-            download = aria2.add_uris([settings["url"]])
+            download = aria2.add_uris([settings["url"]], download_dir="downloads")
 
         msg = await message.reply("Downloading...")
 
@@ -137,11 +141,13 @@ async def start_download(user_id, message):
             download.update()
             cleanup_slow_downloads()
 
+            # Prevent flooding by controlling update frequency
             now = time.time()
             if user_id not in last_update_time or now - last_update_time[user_id] >= 5:
                 progress = (download.completed_length / (download.total_length or 1)) * 100
                 speed = download.download_speed / 1024
-                await msg.edit(
+                await safe_edit_message(
+                    msg,
                     f"**Downloading:** `{download.name}`\n**Progress:** {progress:.2f}%\n**Speed:** {speed:.2f} KB/s",
                     parse_mode=ParseMode.MARKDOWN
                 )
@@ -149,7 +155,7 @@ async def start_download(user_id, message):
 
             await asyncio.sleep(5)
 
-        await msg.edit("Download complete! Uploading...")
+        await safe_edit_message(msg, "Download complete! Uploading...", parse_mode=ParseMode.MARKDOWN)
         for file in download.files:
             await process_video(message, file.path, msg)
 
@@ -158,14 +164,7 @@ async def start_download(user_id, message):
         await message.reply("Download failed.")
 
 async def process_video(message, path, progress_msg):
-    user_id = message.from_user.id
-    settings = user_prefs.get(user_id, {
-        "convert": False,
-        "split": None,
-        "upload_as": "document",
-        "delete": False
-    })
-
+    settings = user_prefs[message.from_user.id]
     max_size = 2 * 1024 * 1024 * 1024
     filename = os.path.basename(path)
 
@@ -190,10 +189,14 @@ async def process_video(message, path, progress_msg):
         os.remove(path)
 
 async def upload_file(message, path, progress_msg):
-    user_id = message.from_user.id
-    settings = user_prefs.get(user_id, {})
+    settings = user_prefs[message.from_user.id]
     try:
+        file_size = os.path.getsize(path)
+        uploaded = 0
+
         async def progress(current, total):
+            nonlocal uploaded
+            uploaded = current
             percent = (current / total) * 100
             await progress_msg.edit(
                 f"**Uploading:** `{os.path.basename(path)}`\n**Progress:** {percent:.2f}%",
@@ -218,7 +221,13 @@ async def upload_file(message, path, progress_msg):
         logger.exception("Upload failed: %s", e)
         await message.reply("Failed to upload.")
 
+async def safe_edit_message(message, new_text, **kwargs):
+    try:
+        if message.text != new_text:
+            await message.edit_text(new_text, **kwargs)
+    except Exception as e:
+        logger.warning(f"Skipping edit: {e}")
+
 if __name__ == "__main__":
     logger.info("Bot started. Make sure aria2c is running.")
     app.run()
-
